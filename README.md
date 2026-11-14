@@ -73,5 +73,23 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 变更审计事件链
+
+`audit`、`catalog`、`retention`、`lifecycle` 四个模块的写入统一经过
+`backend/app/services/audit_ledger.py` 的事件账本，别的模块只读投影：
+
+- 版本键为 `业务对象编号|变更对象`，乱序事件按 `事件序号` 还原版本链；
+- 幂等键重放不追加副本，同槽位冲突顺延下一版本，复核状态单调前进；
+- 每条事件保留来源模块、业务对象主键、父事件序号/指纹、幂等键与摘要、
+  本地序列号、落库批次戳、校验码和稳定排序键；
+- 当前状态进生命周期结果清单，历史链保留完整版本，归档事件仍参与读取。
+
+写入调用链、版本流程图与归并窗口设计见 [`docs/audit-event-flow.md`](docs/audit-event-flow.md)。
+
+```bash
+# 后端行为测试（乱序还原、重放幂等、并发争抢、归档一致性）
+cd backend && .venv/bin/python -m unittest discover -s tests -v
+```
+
 领域：数据工程
 子方向：数仓与数据湖

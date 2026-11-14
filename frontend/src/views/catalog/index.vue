@@ -3,7 +3,7 @@
     <header class="page-head">
       <div>
         <h2>数据资产盘点管理</h2>
-        <p class="page-desc">维护数据资产的分类归属、业务域映射与等级评估，为数据资产盘点提供可追溯的数据工程流程。</p>
+        <p class="page-desc">维护数据资产的分类归属、业务域映射与等级评估；每次动作都会写入审计事件账本，列表显示来源事件，历史链可随时回看。</p>
       </div>
       <div class="page-actions">
         <button class="btn primary" type="button" @click="openCreate">登记资产记录</button>
@@ -12,16 +12,23 @@
     </header>
 
     <div class="stat-row">
-      <article v-for="item in stats" :key="item.label" class="stat-card">
+      <article v-for="item in statCards" :key="item.label" class="stat-card">
         <span class="stat-label">{{ item.label }}</span>
         <strong class="stat-value">{{ item.value }}</strong>
       </article>
     </div>
 
     <form class="filter-bar" @submit.prevent="reload">
-      <label v-for="field in filterFields" :key="field" class="filter-item">
-        <span>{{ field }}</span>
-        <input v-model="filters[field]" :placeholder="`按${field}检索`" />
+      <label class="filter-item">
+        <span>编号检索</span>
+        <input v-model="filters.keyword" :placeholder="`按资产编号检索`" />
+      </label>
+      <label class="filter-item">
+        <span>状态</span>
+        <select v-model="filters.status">
+          <option value="">全部</option>
+          <option v-for="status in statuses" :key="status" :value="status">{{ status }}</option>
+        </select>
       </label>
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
@@ -31,12 +38,21 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>来源事件</th>
+          <th>版本链</th>
+          <th>复核状态</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td>
+            <button class="link" type="button" @click="openHistory(row)">{{ row['来源事件'] || '—' }}</button>
+            <div class="sub-text">{{ row['入口标记'] || '—' }} · 事件序号 {{ row['来源事件序号'] ?? 0 }}</div>
+          </td>
+          <td class="sub-text">{{ chainText(row) }}</td>
+          <td>{{ row['复核状态'] ?? '—' }}</td>
           <td class="row-actions">
             <button
               v-for="action in actions"
@@ -47,18 +63,87 @@
             >
               {{ action }}
             </button>
+            <button v-if="hasDuration" class="link" type="button" @click="openDuration(row)">调整期限</button>
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 1" class="empty-state">暂无数据资产盘点数据，可先登记资产记录</td>
+          <td :colspan="columns.length + 4" class="empty-state">暂无数据资产盘点管理数据，可先登记资产记录</td>
         </tr>
       </tbody>
     </table>
 
     <footer class="page-foot">
-      <span>共 {{ total }} 条数据资产盘点记录</span>
+      <span>共 {{ total }} 条数据资产盘点管理记录 · 来源事件与版本链读自同一审计账本</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
+
+    <section v-if="history" class="panel">
+      <header class="panel-head">
+        <h3 class="panel-title">{{ history['业务对象编号'] }} 的事件版本链</h3>
+        <button class="btn ghost" type="button" @click="history = null">收起</button>
+      </header>
+      <div class="history-grid">
+        <div>
+          <h4>版本链</h4>
+          <ol class="chain-list">
+            <li v-for="chain in history['版本链']" :key="chain['版本键']">
+              <strong>{{ chain['变更对象'] }}</strong>
+              <span v-for="version in chain['版本链']" :key="version['事件编号']" class="version-chip">
+                v{{ version['版本序号'] }}/#{{ version['事件序号'] }} · {{ version['变更前值'] }} → {{ version['变更后值'] }}
+                <em v-if="version['已归档']">（已归档）</em>
+              </span>
+            </li>
+          </ol>
+        </div>
+        <div>
+          <h4>事件流水</h4>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>事件编号</th>
+                <th>序号</th>
+                <th>变更对象</th>
+                <th>前值 → 后值</th>
+                <th>操作人</th>
+                <th>落库时间</th>
+                <th>复核状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="event in history['事件流水']" :key="event['事件编号']">
+                <td class="mono">{{ event['事件编号'] }}</td>
+                <td>{{ event['事件序号'] }}</td>
+                <td>{{ event['变更对象'] }}</td>
+                <td>{{ event['变更前值'] }} → {{ event['变更后值'] }}</td>
+                <td>{{ event['操作人'] }}</td>
+                <td>{{ event['落库时间'] }}</td>
+                <td>{{ event['复核状态'] }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="history['生命周期结果'] && history['生命周期结果'].length" class="sub-text">
+            当前状态：{{ formatFields(history['生命周期结果'][0]['当前字段值']) }}
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="hasDuration && durationTarget" class="panel">
+      <h3 class="panel-title">调整保留期限 · {{ durationTarget['规则编号'] }}</h3>
+      <div class="filter-bar">
+        <label class="filter-item">
+          <span>当前期限</span>
+          <input :value="durationTarget['保留期限']" disabled />
+        </label>
+        <label class="filter-item">
+          <span>新期限</span>
+          <input v-model="newDuration" placeholder="如 30" />
+        </label>
+        <button class="btn primary" type="button" @click="submitDuration">提交调整</button>
+        <button class="btn ghost" type="button" @click="durationTarget = null">取消</button>
+      </div>
+      <p class="sub-text">调整会追加下一版本事件，不覆盖历史版本；上一版本的前后值仍在版本链中。</p>
+    </section>
   </section>
 </template>
 
@@ -67,22 +152,31 @@ import { onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, any>
 
 const ENDPOINT = '/api/catalog'
 const columns = ["资产编号", "表名称", "资产分类", "业务域", "负责人", "数据等级", "更新频率", "盘点时间"]
 const actions = ["提交复核", "归档资产", "废弃资产"]
 const statuses = ["草稿", "已盘点", "已复核", "已归档"]
-const stats = [{"label": "资产记录总数", "value": 0}, {"label": "已复核资产", "value": 0}, {"label": "已归档资产", "value": 0}]
+const hasDuration = false
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
-const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const filters = ref<Record<string, string>>({ keyword: '', status: '' })
+const history = ref<Record<string, any> | null>(null)
+const durationTarget = ref<Row | null>(null)
+const newDuration = ref('')
+
+const statCards = ref([
+  { label: '资产记录总数', value: 0 },
+  { label: '已复核资产', value: 0 },
+  { label: '带来源事件', value: 0 },
+])
 
 function resetFilters() {
-  filters.value = {}
+  filters.value = { keyword: '', status: '' }
+  history.value = null
   void reload()
 }
 
@@ -91,7 +185,29 @@ function exportRows() {
 }
 
 function openCreate() {
-  errorMessage.value = '资产记录登记入口尚未接入审批流'
+  errorMessage.value = '资产记录登记请通过 POST /api/catalog 提交资产编号、表名称、资产分类'
+}
+
+function chainText(row: Row) {
+  const chains = row['版本链'] ?? []
+  if (!chains.length) return '—'
+  return chains.map((chain: Row) => `${chain['变更对象']} ${chain['版本数']} 版`).join('；')
+}
+
+function formatFields(fields: Record<string, string> | undefined) {
+  if (!fields) return '—'
+  return Object.entries(fields).map(([key, value]) => `${key}=${value}`).join('；')
+}
+
+async function openHistory(row: Row) {
+  errorMessage.value = ''
+  try {
+    const response = await request(`${ENDPOINT}/${row.id}/history`)
+    if (!response.ok) throw new Error('历史链读取失败')
+    history.value = await response.json()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '历史链读取失败'
+  }
 }
 
 async function runAction(action: string, row: Row) {
@@ -99,32 +215,74 @@ async function runAction(action: string, row: Row) {
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('数据资产盘点动作未生效，请稍后重试')
-    }
+    const payload = await response.json()
+    if (!payload.ok) throw new Error(payload.message || '数据资产盘点管理动作未生效')
+    errorMessage.value = payload.message
+    await reload()
+    if (history.value) await openHistory(row)
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '数据资产盘点管理操作失败'
+  }
+}
+
+function openDuration(row: Row) {
+  durationTarget.value = row
+  newDuration.value = ''
+}
+
+async function submitDuration() {
+  if (!durationTarget.value) return
+  errorMessage.value = ''
+  try {
+    const response = await request(`${ENDPOINT}/${durationTarget.value.id}/duration`, {
+      method: 'POST',
+      body: JSON.stringify({ values: { 保留期限: newDuration.value, 操作人: '值班管理员' } }),
+    })
+    const payload = await response.json()
+    if (!payload.ok) throw new Error(payload.message || '期限调整未生效')
+    errorMessage.value = payload.message
+    durationTarget.value = null
     await reload()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '数据资产盘点操作失败'
+    errorMessage.value = error instanceof Error ? error.message : '期限调整失败'
   }
 }
 
 async function reload() {
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
+  const query = new URLSearchParams()
+  if (filters.value.keyword) query.set('keyword', filters.value.keyword)
+  if (filters.value.status) query.set('status', filters.value.status)
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
-      throw new Error('资产记录列表读取失败')
-    }
+    const response = await request(`${ENDPOINT}?${query.toString()}&size=200`)
+    if (!response.ok) throw new Error('数据资产盘点管理列表读取失败')
     const payload = await response.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    statCards.value = [
+      { label: '资产记录总数', value: rows.value.length },
+      { label: '已复核资产', value: rows.value.filter((row) => row['复核状态'] === '已复核').length },
+      { label: '带来源事件', value: rows.value.filter((row) => row['来源事件'] && row['来源事件'] !== '—').length },
+    ]
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '数据资产盘点列表读取失败'
+    errorMessage.value = error instanceof Error ? error.message : '数据资产盘点管理列表读取失败'
   }
 }
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.panel { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-top: 14px; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; }
+.panel-title { font-size: 14px; margin: 0 0 10px; }
+.sub-text { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.chain-list { font-size: 13px; padding-left: 18px; }
+.chain-list li { margin-bottom: 8px; }
+.version-chip { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 10px; background: #f1f5f9; }
+.history-grid { display: grid; grid-template-columns: 1fr 1.3fr; gap: 16px; }
+.filter-item select { padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+</style>
